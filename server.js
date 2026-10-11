@@ -43,7 +43,8 @@ For a guess:
 {"type":"guess","guess":"Your best guess in Vietnamese"}
 Do not claim certainty when evidence is weak.
       `,
-      input: JSON.stringify({ history }),
+      input: "Return the answer as JSON. Here is the game history: " 
+    + JSON.stringify({ history }),
       text: {
         format: { type: "json_object" }
       }
