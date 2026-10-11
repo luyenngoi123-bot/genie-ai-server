@@ -1,5 +1,5 @@
+
 const express = require("express");
-const OpenAI = require("openai");
 
 const app = express();
 app.use(express.json({ limit: "30kb" }));
@@ -10,9 +10,11 @@ app.get("/", (req, res) => {
 
 app.post("/ask", async (req, res) => {
   try {
-    if (!process.env.OPENAI_API_KEY) {
+    const apiKey = process.env.GEMINI_API_KEY;
+
+    if (!apiKey) {
       return res.status(500).json({
-        error: "Missing OPENAI_API_KEY"
+        error: "Missing GEMINI_API_KEY"
       });
     }
 
@@ -20,38 +22,84 @@ app.post("/ask", async (req, res) => {
       ? req.body.history.slice(-40)
       : [];
 
-    const client = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY
-    });
-
-    const response = await client.responses.create({
-      model: "gpt-4.1-mini",
-      instructions: `
+    const prompt = `
 You are a clever guessing genie like Akinator.
-The player can think of ANY person, fictional character,
+The player can think of any person, fictional character,
 animal, object, place, game character, or other thing.
 
 Use the previous questions and answers to narrow down
-the possibilities. Ask one useful, clear yes/no question
-at a time. Do not repeat questions already asked.
-When you have enough evidence, make your best guess.
+the possibilities. Ask one clear yes/no question at a time.
+Do not repeat questions already asked.
+When there is enough evidence, make your best guess.
 
-Return JSON only:
-For a question:
+Return valid JSON only, in one of these formats:
 {"type":"question","question":"Your question in Vietnamese"}
-For a guess:
 {"type":"guess","guess":"Your best guess in Vietnamese"}
-Do not claim certainty when evidence is weak.
-      `,
-      
-input: "Return the answer as JSON. Here is the game history: " 
-    + JSON.stringify({ history }),
-      text: {
-        format: { type: "json_object" }
-      }
-    });
 
-    const result = JSON.parse(response.output_text);
+If evidence is weak, ask another question instead of guessing.
+
+Game history:
+${JSON.stringify(history)}
+`;
+
+    const response = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": apiKey
+        },
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [{
+              text: "You are an AI guessing genie. Follow the user's requested JSON format exactly."
+            }]
+          },
+          contents: [{
+            role: "user",
+            parts: [{ text: prompt }]
+          }],
+          generationConfig: {
+            responseMimeType: "application/json",
+            temperature: 0.7,
+            maxOutputTokens: 200
+          }
+        })
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error("Gemini API error:", response.status, data);
+      return res.status(502).json({
+        error: "Gemini API request failed",
+        status: response.status
+      });
+    }
+
+    const output = data.candidates?.[0]?.content?.parts
+      ?.map(part => part.text || "")
+      .join("")
+      .trim();
+
+    if (!output) {
+      console.error("Gemini returned no text:", JSON.stringify(data));
+      return res.status(502).json({
+        error: "Gemini returned no answer"
+      });
+    }
+
+    let result;
+    try {
+      result = JSON.parse(output);
+    } catch {
+      console.error("Invalid Gemini JSON:", output);
+      return res.status(502).json({
+        error: "Gemini returned invalid JSON"
+      });
+    }
 
     if (result.type === "guess" && result.guess) {
       return res.json({
@@ -60,16 +108,23 @@ input: "Return the answer as JSON. Here is the game history: "
       });
     }
 
+    if (result.question) {
+      return res.json({
+        type: "question",
+        question: result.question
+      });
+    }
+
     return res.json({
       type: "question",
-      question: result.question || "Nhân vật đó có thật ngoài đời không?"
+      question: "Đó có phải là một nhân vật hư cấu không?"
     });
-} catch (error) {
-  console.error("Genie AI error:", error);
-  return res.status(500).json({
-    error: error.message || "AI request failed"
-  });
-}
+  } catch (error) {
+    console.error("Genie server error:", error.message);
+    return res.status(500).json({
+      error: "Internal server error"
+    });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
