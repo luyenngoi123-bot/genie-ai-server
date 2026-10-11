@@ -1,4 +1,3 @@
-
 const express = require("express");
 const OpenAI = require("openai");
 
@@ -63,12 +62,12 @@ Do not claim certainty when evidence is weak.
       type: "question",
       question: result.question || "Nhân vật đó có thật ngoài đời không?"
     });
-  } catch (error) {
-    console.error("Genie AI error:", error.message);
-    res.status(500).json({
-      error: "AI request failed"
-    });
-  }
+} catch (error) {
+  console.error("Genie AI error:", error);
+  return res.status(500).json({
+    error: error.message || "AI request failed"
+  });
+}
 });
 
 const PORT = process.env.PORT || 3000;
