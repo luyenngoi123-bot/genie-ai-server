@@ -27,77 +27,127 @@ You are a clever guessing genie like Akinator.
 The player can think of any person, fictional character,
 animal, object, place, game character, or other thing.
 
-Use the previous questions and answers to narrow down
-the possibilities. Ask one clear yes/no question at a time.
+Use the game history to narrow down the possibilities.
+Ask one short, clear yes/no question in Vietnamese at a time.
 Do not repeat questions already asked.
 When there is enough evidence, make your best guess.
+If evidence is weak, ask another question.
 
-Return valid JSON only, in one of these formats:
-{"type":"question","question":"Your question in Vietnamese"}
-{"type":"guess","guess":"Your best guess in Vietnamese"}
-
-If evidence is weak, ask another question instead of guessing.
+Return one complete JSON object only.
+For a question:
+{"type":"question","question":"Câu hỏi bằng tiếng Việt"}
+For a guess:
+{"type":"guess","guess":"Tên thứ bạn đoán bằng tiếng Việt"}
 
 Game history:
 ${JSON.stringify(history)}
 `;
 
-    const response = await fetch(
-     
-"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
+    let response;
+    let data;
 
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-key": apiKey
-        },
-        body: JSON.stringify({
-          systemInstruction: {
-            parts: [{
-              text: "You are an AI guessing genie. Follow the user's requested JSON format exactly."
-            }]
-          },
-          contents: [{
-            role: "user",
-            parts: [{ text: prompt }]
-          }],
-          generationConfig: {
-            responseMimeType: "application/json",
-            temperature: 0.7,
-            maxOutputTokens: 200
+    // Retry up to 3 times if Gemini is temporarily busy.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        response = await fetch(
+          "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-goog-api-key": apiKey
+            },
+            body: JSON.stringify({
+              systemInstruction: {
+                parts: [{
+                  text: "You are an AI guessing genie. Return only one complete valid JSON object with either type question and question, or type guess and guess. Write questions in Vietnamese."
+                }]
+              },
+              contents: [{
+                role: "user",
+                parts: [{ text: prompt }]
+              }],
+              generationConfig: {
+                responseMimeType: "application/json",
+                temperature: 0.4,
+                maxOutputTokens: 500
+              }
+            }),
+            signal: AbortSignal.timeout(20000)
           }
-        })
+        );
+
+        data = await response.json();
+      } catch (networkError) {
+        console.error("Gemini connection error:", networkError.message);
+
+        if (attempt < 2) {
+          await new Promise(resolve =>
+            setTimeout(resolve, 1000 * (attempt + 1))
+          );
+          continue;
+        }
+
+        return res.status(502).json({
+          error: "Could not connect to Gemini"
+        });
       }
-    );
 
-    const data = await response.json();
+      if (response.ok) {
+        break;
+      }
 
-    if (!response.ok) {
-      console.error("Gemini API error:", response.status, data);
+      console.error(
+        "Gemini API error:",
+        response.status,
+        data
+      );
+
+      if (
+        ![429, 500, 502, 503, 504].includes(response.status) ||
+        attempt === 2
+      ) {
+        return res.status(502).json({
+          error: "Gemini API request failed",
+          status: response.status
+        });
+      }
+
+      await new Promise(resolve =>
+        setTimeout(resolve, 1000 * (attempt + 1))
+      );
+    }
+
+    if (!response || !response.ok) {
       return res.status(502).json({
-        error: "Gemini API request failed",
-        status: response.status
+        error: "Gemini is temporarily unavailable"
       });
     }
 
-    const output = data.candidates?.[0]?.content?.parts
+    const candidate = data.candidates?.[0];
+    const output = candidate?.content?.parts
       ?.map(part => part.text || "")
       .join("")
       .trim();
 
     if (!output) {
-      console.error("Gemini returned no text:", JSON.stringify(data));
+      console.error(
+        "Gemini returned no text:",
+        JSON.stringify(data)
+      );
+
       return res.status(502).json({
         error: "Gemini returned no answer"
       });
     }
 
     let result;
+
     try {
       result = JSON.parse(output);
-    } catch {
+    } catch (parseError) {
       console.error("Invalid Gemini JSON:", output);
+
       return res.status(502).json({
         error: "Gemini returned invalid JSON"
       });
@@ -106,23 +156,24 @@ ${JSON.stringify(history)}
     if (result.type === "guess" && result.guess) {
       return res.json({
         type: "guess",
-        guess: result.guess
+        guess: String(result.guess)
       });
     }
 
-    if (result.question) {
+    if (result.type === "question" && result.question) {
       return res.json({
         type: "question",
-        question: result.question
+        question: String(result.question)
       });
     }
 
-    return res.json({
-      type: "question",
-      question: "Đó có phải là một nhân vật hư cấu không?"
+    return res.status(502).json({
+      error: "Gemini returned an unexpected response"
     });
+
   } catch (error) {
     console.error("Genie server error:", error.message);
+
     return res.status(500).json({
       error: "Internal server error"
     });
